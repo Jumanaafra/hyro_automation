@@ -1,0 +1,44 @@
+# HYRO Automation — Render Deployment Config
+# Backend: Express API on Render (https://render.com)
+
+services:
+  - type: web
+    name: hyro-automation-api
+    env: node
+    region: singapore
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CREDENTIAL_ENCRYPTION_KEY
+        sync: false
+      - key: CLIENT_URL
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GMAIL_CLIENT_ID
+        sync: false
+      - key: GMAIL_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_SHEETS_CLIENT_ID
+        sync: false
+      - key: GOOGLE_SHEETS_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_SHEETS_SPREADSHEET_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_ID
+        sync: false
+      - key: LINKEDIN_CLIENT_SECRET
+        sync: false

@@ -24,10 +24,28 @@ app.use(helmet({
   contentSecurityPolicy: false // disabled to allow dynamic client-side scripts in dev
 }));
 
-// Enable CORS with restricted origin
+// Enable CORS — allow configured CLIENT_URL + any Vercel deployment + localhost
+const allowedOrigins = [
+  env.CLIENT_URL,
+  'http://localhost:3000',
+  'http://localhost:3001',
+].filter(Boolean);
+
 app.use(
   cors({
-    origin: env.CLIENT_URL || 'http://localhost:3000',
+    origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, curl, Render health checks)
+      if (!origin) return callback(null, true);
+      // Allow any Vercel preview/production URLs and configured origins
+      if (
+        allowedOrigins.includes(origin) ||
+        /\.vercel\.app$/.test(origin) ||
+        /\.onrender\.com$/.test(origin)
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error(`CORS: origin not allowed — ${origin}`));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']

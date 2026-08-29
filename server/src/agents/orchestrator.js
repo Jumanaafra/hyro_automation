@@ -331,7 +331,22 @@ class Orchestrator {
   }
 
   async _updateCurrentNode(id, ownerId, currentNode) {
-    return await this._updateStatus(id, ownerId, null, { currentNode });
+    const ownerStr = String(ownerId);
+    const dbStatus = getDbStatus();
+
+    if (dbStatus.isConnected) {
+      return await Execution.findOneAndUpdate(
+        { _id: id, owner: ownerStr },
+        { currentNode, updatedAt: new Date() },
+        { new: true }
+      );
+    }
+
+    const exec = inMemoryExecutions.get(String(id));
+    if (!exec || String(exec.owner) !== ownerStr) return null;
+    const updated = { ...exec, currentNode, updatedAt: new Date() };
+    inMemoryExecutions.set(String(id), updated);
+    return updated;
   }
 
   clearInMemoryStore() {

@@ -28,14 +28,9 @@ class ValidationAgent {
 
     // Type-specific field validations
     if (node.type === 'googleSheetsAppend') {
-      const rowsAppended = data.rowsAppended !== undefined ? data.rowsAppended : output?.rowsAppended;
-      if (rowsAppended === 0 && !data.skippedDuplicates && !data.success) {
-        return {
-          isValid: false,
-          errorCategory: 'MISSING_FIELDS',
-          reason: 'Google Sheets node failed to append rows'
-        };
-      }
+      // 0 rows appended is valid: no jobs found, or all were duplicates, or empty input
+      // Only fail if there was an explicit API error (caught above via result.error/result.status=FAILED)
+      // Do not fail on rowsAppended === 0 alone — that's a normal empty run
     }
 
     if (node.type === 'aiDetailExtractor') {

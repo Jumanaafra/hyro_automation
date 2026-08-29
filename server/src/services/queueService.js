@@ -13,7 +13,6 @@ class InMemoryQueue {
     this.jobs = new Map();
     this._nextId = 1;
     this._listeners = {};
-    console.warn(`[Queue] ⚠️  USING IN-MEMORY FALLBACK for queue "${name}". This is NOT production-grade. No retry guarantees.`);
   }
 
   async add(jobName, data, opts = {}) {

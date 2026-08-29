@@ -24,22 +24,29 @@ class ValidationAgent {
     }
 
     const { output } = result;
+    const data = output?.data || output || {};
 
     // Type-specific field validations
-    if (node.type === 'googleSheetsAppend' && (!output || output.rowsAppended === 0)) {
-      return {
-        isValid: false,
-        errorCategory: 'MISSING_FIELDS',
-        reason: 'Google Sheets node failed to append rows'
-      };
+    if (node.type === 'googleSheetsAppend') {
+      const rowsAppended = data.rowsAppended !== undefined ? data.rowsAppended : output?.rowsAppended;
+      if (rowsAppended === 0 && !data.skippedDuplicates && !data.success) {
+        return {
+          isValid: false,
+          errorCategory: 'MISSING_FIELDS',
+          reason: 'Google Sheets node failed to append rows'
+        };
+      }
     }
 
-    if (node.type === 'aiDetailExtractor' && (!output || !output.records || output.records.length === 0)) {
-      return {
-        isValid: false,
-        errorCategory: 'MISSING_FIELDS',
-        reason: 'AI Extractor returned no structured records'
-      };
+    if (node.type === 'aiDetailExtractor') {
+      const records = data.records || output?.records;
+      if (records !== undefined && !Array.isArray(records)) {
+        return {
+          isValid: false,
+          errorCategory: 'MISSING_FIELDS',
+          reason: 'AI Extractor returned invalid records shape'
+        };
+      }
     }
 
     return {

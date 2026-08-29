@@ -15,6 +15,7 @@ router.get('/:id', (req, res, next) => workflowController.getById(req, res, next
 router.put('/:id', (req, res, next) => workflowController.update(req, res, next));
 router.post('/:id/duplicate', (req, res, next) => workflowController.duplicate(req, res, next));
 router.post('/:id/execute', (req, res, next) => workflowController.execute(req, res, next));
+router.post('/:id/run', (req, res, next) => workflowController.execute(req, res, next));
 router.delete('/:id', (req, res, next) => workflowController.remove(req, res, next));
 
 module.exports = router;

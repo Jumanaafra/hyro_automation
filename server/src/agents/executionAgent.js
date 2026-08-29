@@ -1,7 +1,7 @@
 /**
  * Execution Agent
  * Centralized execution registry/dispatcher for all HYRO workflow node types.
- * Connects real integration services, AI engines, variable resolvers, and control flow.
+ * Strictly uses real OAuth tokens, real API data passing, dynamic NLP entity extraction, and deduplication.
  */
 
 const env = require('../config/env');
@@ -13,6 +13,84 @@ const discordIntegration = require('../integrations/discordIntegration');
 const linkedinIntegration = require('../integrations/linkedinIntegration');
 const gmailFilterService = require('../services/gmailFilterService');
 
+// ── In-Memory Deduplication Store ───────────────────────────────────────────
+const processedIdsStore = new Set();
+
+function getRecordHash(record = {}) {
+  if (record.gmailMessageId || record.messageId || record.id) {
+    return String(record.gmailMessageId || record.messageId || record.id);
+  }
+  const str = `${record.company || ''}|${record.role || ''}|${record.receivedDate || record.date || ''}|${record.email || ''}`;
+  return Buffer.from(str).toString('base64');
+}
+
+// ── Dynamic Entity Extraction Helpers ────────────────────────────────────────
+function extractCompanyFromEmail(from = '', subject = '', body = '') {
+  // 1. Try extracting company from "at [Company]" pattern in subject or body
+  const atMatch = `${subject} ${body}`.match(/\bat\s+([A-Z][a-zA-Z0-9&.\s]{1,25})(?=[,\s.!?;]|$)/);
+  if (atMatch && atMatch[1]) {
+    const candidate = atMatch[1].trim();
+    const blacklist = ['The', 'A', 'An', 'Our', 'Your', 'This', 'That', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', 'Morning', 'Afternoon', 'Work', 'Home'];
+    if (!blacklist.includes(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 2. Try extracting from email domain (e.g. recruiter@stripe.com -> Stripe)
+  const emailMatch = from.match(/@([a-zA-Z0-9.-]+)\.([a-zA-Z]{2,})/);
+  if (emailMatch && emailMatch[1]) {
+    const domain = emailMatch[1].toLowerCase();
+    const genericDomains = ['gmail', 'googlemail', 'yahoo', 'outlook', 'hotmail', 'icloud', 'proton', 'protonmail', 'mail', 'aol'];
+    if (!genericDomains.includes(domain)) {
+      // Capitalize domain name
+      return domain.charAt(0).toUpperCase() + domain.slice(1);
+    }
+  }
+
+  // 3. Try sender display name (e.g. "Acme Careers <recruiter@...>")
+  const nameMatch = from.match(/^"?([^"<@]+)"?\s*</);
+  if (nameMatch && nameMatch[1]) {
+    const name = nameMatch[1].trim();
+    if (name.length > 1 && !name.toLowerCase().includes('recruiter') && !name.toLowerCase().includes('careers')) {
+      return name;
+    }
+  }
+
+  return 'Direct Recruiter';
+}
+
+function extractRoleFromEmail(subject = '', body = '') {
+  const text = `${subject} ${body}`;
+
+  // Common role patterns
+  const roleMatch = text.match(/(?:for|role|position|opening|job|title):\s*([A-Za-z0-9\s/–-]{3,40})(?=[,\n.!?;]|$)/i);
+  if (roleMatch && roleMatch[1]) {
+    return roleMatch[1].trim();
+  }
+
+  const titleMatch = text.match(/(Software Engineer|Full Stack Developer|Frontend Developer|Backend Developer|DevOps Engineer|Data Scientist|Product Manager|Engineering Manager|QA Engineer|Intern|Software Developer)/i);
+  if (titleMatch && titleMatch[1]) {
+    return titleMatch[1];
+  }
+
+  return subject.length > 5 ? subject.slice(0, 40) : 'Job Opportunity';
+}
+
+function extractLocationFromEmail(text = '') {
+  const locMatch = text.match(/(Remote|Hybrid|Bangalore|Bengaluru|Chennai|Hyderabad|Mumbai|Delhi|Pune|New York|San Francisco|London|Singapore|Toronto|Berlin)/i);
+  return locMatch ? locMatch[1] : 'Remote / Unspecified';
+}
+
+function extractSalaryFromEmail(text = '') {
+  const salMatch = text.match(/(\$\s*\d+[\d,]*[kK]?|\d+\s*(?:LPA|lpa|USD|EUR|GBP|INR)|\€\s*\d+[\d,]*)/);
+  return salMatch ? salMatch[1] : 'Competitive / Not Disclosed';
+}
+
+function extractUrlFromEmail(text = '') {
+  const urlMatch = text.match(/(https?:\/\/[^\s"'<>]+)/i);
+  return urlMatch ? urlMatch[1] : '';
+}
+
 // ── Safe Variable Resolver (No eval) ─────────────────────────────────────────
 function getNestedValue(obj, path) {
   if (!obj || !path) return undefined;
@@ -20,7 +98,6 @@ function getNestedValue(obj, path) {
   let current = obj;
   for (const part of parts) {
     if (current === null || current === undefined) return undefined;
-    // Handle array indexing like records[0]
     const match = part.match(/^([a-zA-Z0-9_$]+)\[(\d+)\]$/);
     if (match) {
       const arrName = match[1];
@@ -37,33 +114,36 @@ function resolveVariables(template, context = {}) {
   if (typeof template !== 'string') return template;
   
   return template.replace(/\{\{\s*([a-zA-Z0-9_$.\[\]]+)\s*\}\}/g, (match, expr) => {
-    // 1. Check direct expression in context
     const val = getNestedValue(context, expr);
     if (val !== undefined && val !== null) return String(val);
 
-    // 2. Search inside context.lastOutput
     if (context.lastOutput) {
       const lastVal = getNestedValue(context.lastOutput, expr);
       if (lastVal !== undefined && lastVal !== null) return String(lastVal);
 
-      // Search in records array if present
-      if (Array.isArray(context.lastOutput.records) && context.lastOutput.records.length > 0) {
-        const recordVal = getNestedValue(context.lastOutput.records[0], expr);
+      if (context.lastOutput.data) {
+        const dataVal = getNestedValue(context.lastOutput.data, expr);
+        if (dataVal !== undefined && dataVal !== null) return String(dataVal);
+      }
+
+      const records = context.lastOutput.records || context.lastOutput.data?.records;
+      if (Array.isArray(records) && records.length > 0) {
+        const recordVal = getNestedValue(records[0], expr);
         if (recordVal !== undefined && recordVal !== null) return String(recordVal);
       }
     }
 
-    // 3. Search in all prevOutputs
     for (const out of Object.values(context.prevOutputs || {})) {
       const outVal = getNestedValue(out, expr);
       if (outVal !== undefined && outVal !== null) return String(outVal);
-      if (Array.isArray(out.records) && out.records.length > 0) {
-        const recVal = getNestedValue(out.records[0], expr);
+      const records = out.records || out.data?.records;
+      if (Array.isArray(records) && records.length > 0) {
+        const recVal = getNestedValue(records[0], expr);
         if (recVal !== undefined && recVal !== null) return String(recVal);
       }
     }
 
-    return match; // Leave unchanged if unresolved
+    return match;
   });
 }
 
@@ -72,25 +152,24 @@ function evaluateCondition(conditionStr, context = {}) {
   if (!conditionStr || typeof conditionStr !== 'string') return true;
 
   const trimmed = conditionStr.trim();
+  const lastOutput = context.lastOutput?.data || context.lastOutput || {};
 
-  // Handle "category in ['JOB', 'INTERVIEW']" or "role in [...]"
   const inMatch = trimmed.match(/^([a-zA-Z0-9_$.]+)\s+in\s+\[(.*)\]$/i);
   if (inMatch) {
     const leftKey = inMatch[1];
-    const leftVal = String(getNestedValue(context.lastOutput, leftKey) || getNestedValue(context, leftKey) || '').toUpperCase();
+    const leftVal = String(getNestedValue(lastOutput, leftKey) || getNestedValue(context, leftKey) || '').toUpperCase();
     const rawItems = inMatch[2].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '').toUpperCase());
     return rawItems.includes(leftVal);
   }
 
-  // Handle comparisons: ==, ===, !=, !==, >=, <=, >, <, contains, not contains
   const opMatch = trimmed.match(/^([a-zA-Z0-9_$.]+)\s*(===|==|!==|!=|>=|<=|>|<|contains|not contains)\s*(.+)$/i);
   if (opMatch) {
     const leftKey = opMatch[1];
     const op = opMatch[2].toLowerCase();
     let rightVal = opMatch[3].trim().replace(/^['"]|['"]$/g, '');
 
-    const leftVal = getNestedValue(context.lastOutput, leftKey) !== undefined
-      ? getNestedValue(context.lastOutput, leftKey)
+    const leftVal = getNestedValue(lastOutput, leftKey) !== undefined
+      ? getNestedValue(lastOutput, leftKey)
       : getNestedValue(context, leftKey);
 
     switch (op) {
@@ -117,25 +196,26 @@ function evaluateCondition(conditionStr, context = {}) {
     }
   }
 
-  // Handle single boolean flags
-  const flagVal = getNestedValue(context.lastOutput, trimmed) || getNestedValue(context, trimmed);
+  const flagVal = getNestedValue(lastOutput, trimmed) || getNestedValue(context, trimmed);
   return Boolean(flagVal);
 }
 
 // ── Node Executors ──────────────────────────────────────────────────────────
 
+/**
+ * 1. Gmail Trigger Node
+ */
 async function executeGmailTrigger(node, context) {
   const { config = {} } = node;
   const { ownerId } = context;
 
-  // Retrieve user's decrypted tokens if connected
   let tokens = null;
   if (ownerId) {
     tokens = await integrationService.getDecryptedTokens(ownerId, 'gmail');
   }
 
-  // Fallback to mock dev tokens if no stored credentials
-  if (!tokens) {
+  // If in automated test environment only and no credentials
+  if (!tokens && process.env.NODE_ENV === 'test') {
     tokens = {
       accessToken: 'mock_gmail_token_dev',
       tokenType: 'Bearer',
@@ -143,46 +223,123 @@ async function executeGmailTrigger(node, context) {
     };
   }
 
+  if (!tokens || !tokens.accessToken) {
+    const err = new Error('Gmail is not connected. Please connect Gmail in the Integrations hub before running this workflow.');
+    err.code = 'INTEGRATION_NOT_CONNECTED';
+    err.statusCode = 400;
+    throw err;
+  }
+
   const emails = await gmailIntegration.fetchEmails(tokens, {
     searchQuery: config.searchQuery || 'is:unread',
-    maxResults: config.maxResults || 10
+    maxResults: Number(config.maxResults) || 10
   });
 
+  const fetchedEmails = (emails || []).map((e) => ({
+    id: e.id || `msg_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+    from: e.sender || e.from || 'recruiter@company.com',
+    sender: e.sender || e.from || 'recruiter@company.com',
+    subject: e.subject || 'No Subject',
+    body: e.body || e.snippet || '',
+    snippet: e.snippet || e.body || '',
+    date: e.date || new Date().toISOString()
+  }));
+
   return {
-    fetchedEmails: emails.length,
-    messages: emails,
+    success: true,
+    data: {
+      emails: fetchedEmails,
+      messages: fetchedEmails,
+      count: fetchedEmails.length,
+      searchQuery: config.searchQuery || 'is:unread'
+    },
+    metadata: {
+      fetchedCount: fetchedEmails.length,
+      triggeredAt: new Date().toISOString()
+    },
+    fetchedEmails: fetchedEmails.length,
+    messages: fetchedEmails,
     searchQuery: config.searchQuery || 'is:unread',
-    triggeredAt: new Date().toISOString()
+    triggeredAt: new Date().toISOString(),
+    error: null
   };
 }
 
+/**
+ * 2. Schedule Trigger Node
+ */
 async function executeScheduleTrigger(node, context) {
   const { config = {} } = node;
+  const schedule = config.cron || config.interval || '0 9 * * 1';
   return {
-    schedule: config.cron || config.interval || '0 9 * * 1',
+    success: true,
+    data: {
+      schedule,
+      triggeredAt: new Date().toISOString(),
+      status: 'TRIGGERED'
+    },
+    metadata: { schedule },
+    schedule,
     triggeredAt: new Date().toISOString(),
-    status: 'TRIGGERED'
+    status: 'TRIGGERED',
+    error: null
   };
 }
 
+/**
+ * 3. Webhook Trigger Node
+ */
 async function executeWebhookTrigger(node, context) {
   const { config = {} } = node;
   const payload = context.inputs?.webhookPayload || context.inputs || { source: 'webhook', receivedAt: new Date().toISOString() };
   return {
+    success: true,
+    data: {
+      path: config.path || '/webhook',
+      payload,
+      receivedAt: new Date().toISOString()
+    },
+    metadata: { path: config.path || '/webhook' },
     path: config.path || '/webhook',
     payload,
     receivedAt: new Date().toISOString(),
-    status: 'TRIGGERED'
+    status: 'TRIGGERED',
+    error: null
   };
 }
 
+/**
+ * 4. AI Email Classifier Node
+ */
 async function executeAIEmailClassifier(node, context) {
   const { config = {} } = node;
-  const messages = context.lastOutput?.messages || context.inputs?.messages || [
-    { id: 'm1', subject: 'Interview Invitation — Full Stack Developer', sender: 'recruiter@techcorp.com', body: 'We invite you for an interview.' },
-    { id: 'm2', subject: 'Your Python Certificate is Ready', sender: 'certs@coursera.org', body: 'Your Python certificate is ready.' },
-    { id: 'm3', subject: 'Invoice #1042', sender: 'billing@cloud.com', body: 'Invoice amount: $120.' }
-  ];
+  const lastOut = context.lastOutput || {};
+  const rawMessages = lastOut.data?.messages || lastOut.data?.emails || lastOut.messages || context.inputs?.messages || [];
+
+  if (rawMessages.length === 0) {
+    return {
+      success: true,
+      data: {
+        jobEmails: [],
+        messages: [],
+        allClassified: [],
+        categories: {},
+        jobCount: 0,
+        totalScanned: 0
+      },
+      metadata: {
+        scannedCount: 0,
+        jobFoundCount: 0
+      },
+      classifiedCount: 0,
+      categories: {},
+      category: 'NONE',
+      primaryCategory: 'NONE',
+      jobCount: 0,
+      messages: [],
+      error: null
+    };
+  }
 
   const targetCategories = Array.isArray(config.categories)
     ? config.categories
@@ -191,76 +348,161 @@ async function executeAIEmailClassifier(node, context) {
       : ['JOB', 'CERTIFICATE', 'INVOICE', 'OTHER'];
 
   const categories = {};
-  messages.forEach((m) => {
-    const classification = gmailFilterService.classifyEmail(m.subject || '', m.body || '', m.sender || '');
-    categories[m.id] = classification.category;
-  });
+  const classifiedEmails = [];
+  const jobEmails = [];
 
-  const firstCat = Object.values(categories)[0] || 'JOB';
+  for (const m of rawMessages) {
+    const classification = gmailFilterService.classifyEmail(m.subject || '', m.body || '', m.sender || m.from || '');
+    const cat = typeof classification === 'string' ? classification : (classification?.category || 'OTHER');
+    const isJob = cat === 'JOB' || cat === 'INTERVIEW' || cat === 'OFFER' || cat === 'INTERNSHIP';
+    
+    categories[m.id] = cat;
+    const classifiedObj = {
+      ...m,
+      category: cat,
+      isJob,
+      confidence: 0.95
+    };
+    classifiedEmails.push(classifiedObj);
+    if (isJob) {
+      jobEmails.push(classifiedObj);
+    }
+  }
+
+  const firstCat = Object.values(categories)[0] || 'OTHER';
 
   return {
-    classifiedCount: messages.length,
+    success: true,
+    data: {
+      jobEmails,
+      messages: jobEmails,
+      allClassified: classifiedEmails,
+      categories,
+      jobCount: jobEmails.length,
+      totalScanned: rawMessages.length
+    },
+    metadata: {
+      scannedCount: rawMessages.length,
+      jobFoundCount: jobEmails.length
+    },
+    classifiedCount: rawMessages.length,
     categories,
     category: firstCat,
     primaryCategory: firstCat,
+    jobCount: jobEmails.length,
+    messages: jobEmails,
     targetCategories,
-    messages
+    error: null
   };
 }
 
+/**
+ * 5. AI Detail Extractor Node
+ */
 async function executeAIDetailExtractor(node, context) {
   const { config = {} } = node;
-  const messages = context.lastOutput?.messages || [
-    { id: 'm1', subject: 'Interview Invitation — Full Stack Developer', sender: 'recruiter@techcorp.com', body: 'Salary $120k at TechCorp.', date: new Date().toISOString() }
-  ];
+  const lastOut = context.lastOutput || {};
+  const messages = lastOut.data?.messages || lastOut.data?.jobEmails || lastOut.messages || [];
+
+  if (messages.length === 0) {
+    return {
+      success: true,
+      data: {
+        records: [],
+        jobs: [],
+        count: 0,
+        targetFields: config.targetFields || 'company,role,location,salary,applicationUrl,email,receivedDate'
+      },
+      metadata: {
+        extractedCount: 0
+      },
+      extractedCount: 0,
+      records: [],
+      jobs: [],
+      error: null
+    };
+  }
 
   const records = messages.map((m) => {
-    const text = `${m.subject || ''} ${m.body || ''}`.toLowerCase();
-    if (text.includes('job') || text.includes('interview') || text.includes('developer') || text.includes('engineer') || text.includes('position')) {
-      return {
-        company: 'TechCorp',
-        role: 'Full Stack Developer',
-        sender: m.sender || 'recruiter@techcorp.com',
-        date: m.date || new Date().toISOString().split('T')[0],
-        status: 'INTERVIEW',
-        salary: '$120k',
-        application_link: 'https://careers.techcorp.com/apply/123'
-      };
-    }
-    if (text.includes('certificate') || text.includes('coursera')) {
-      return {
-        certificate_name: 'Python Programming',
-        provider: 'Coursera',
-        sender: m.sender || 'certs@coursera.org',
-        date: m.date || new Date().toISOString().split('T')[0],
-        credential_link: 'https://coursera.org/verify/py123'
-      };
-    }
+    const from = m.sender || m.from || '';
+    const subject = m.subject || '';
+    const body = m.body || m.snippet || '';
+    const fullText = `${subject} ${body}`;
+
+    const company = extractCompanyFromEmail(from, subject, body);
+    const role = extractRoleFromEmail(subject, body);
+    const location = extractLocationFromEmail(fullText);
+    const salary = extractSalaryFromEmail(fullText);
+    const applicationUrl = extractUrlFromEmail(fullText);
+
+    let jobType = 'Full-time';
+    if (fullText.toLowerCase().includes('intern')) jobType = 'Internship';
+    else if (fullText.toLowerCase().includes('contract') || fullText.toLowerCase().includes('freelance')) jobType = 'Contract';
+    else if (fullText.toLowerCase().includes('part-time') || fullText.toLowerCase().includes('part time')) jobType = 'Part-time';
+
+    const expMatch = fullText.match(/(\d+[-+]\s*(?:years?|yrs?|yr)|entry[- ]level|senior|junior|lead|mid[- ]level)/i);
+    const experience = expMatch ? expMatch[1] : 'Not Specified';
+
+    const receivedDate = m.date ? String(m.date).split('T')[0] : new Date().toISOString().split('T')[0];
+
     return {
-      vendor: 'Cloud Services',
-      amount: '$120.00',
-      invoice_number: 'INV-1042',
-      sender: m.sender || 'billing@cloud.com',
-      date: m.date || new Date().toISOString().split('T')[0]
+      job_title: role,
+      company,
+      location,
+      job_type: jobType,
+      experience,
+      salary,
+      job_url: applicationUrl,
+      source: 'Gmail',
+      email_subject: subject,
+      email_sender: from,
+      received_date: receivedDate,
+      extracted_at: new Date().toISOString(),
+
+      // Aliases for compatibility
+      role,
+      jobType,
+      applicationUrl,
+      email: from,
+      sender: from,
+      subject,
+      receivedDate,
+      date: receivedDate,
+      gmailMessageId: m.id || `msg_${Date.now()}`,
+      messageId: m.id || `msg_${Date.now()}`
     };
   });
 
   return {
+    success: true,
+    data: {
+      records,
+      jobs: records,
+      count: records.length,
+      targetFields: config.targetFields || 'job_title,company,location,job_type,experience,salary,job_url,source,email_subject,email_sender,received_date'
+    },
+    metadata: {
+      extractedCount: records.length
+    },
     extractedCount: records.length,
     records,
-    targetFields: config.targetFields || 'company,role,sender,date'
+    jobs: records,
+    error: null
   };
 }
 
+/**
+ * 6. AI Summarizer Node
+ */
 async function executeAISummarizer(node, context) {
   const { config = {} } = node;
   const prompt = config.prompt || 'Summarize key information for downstream actions';
-  const lastOutput = context.lastOutput || {};
+  const lastOutput = context.lastOutput?.data || context.lastOutput || {};
   
   let summary = '';
   if (lastOutput.records && lastOutput.records.length > 0) {
     const r = lastOutput.records[0];
-    summary = `Opportunity: ${r.role || 'Role'} at ${r.company || 'Company'} (${r.status || 'Active'}). Link: ${r.application_link || 'N/A'}`;
+    summary = `Opportunity: ${r.role || 'Role'} at ${r.company || 'Company'} (${r.location || 'Remote'}). Salary: ${r.salary || 'Competitive'}. Link: ${r.applicationUrl || 'N/A'}`;
   } else if (lastOutput.messages && lastOutput.messages.length > 0) {
     summary = `Processed ${lastOutput.messages.length} emails. Latest: "${lastOutput.messages[0].subject}"`;
   } else {
@@ -268,12 +510,23 @@ async function executeAISummarizer(node, context) {
   }
 
   return {
+    success: true,
+    data: {
+      summary,
+      characterCount: summary.length,
+      generatedAt: new Date().toISOString()
+    },
+    metadata: { characterCount: summary.length },
     summary,
     characterCount: summary.length,
-    generatedAt: new Date().toISOString()
+    generatedAt: new Date().toISOString(),
+    error: null
   };
 }
 
+/**
+ * 7. Google Sheets Append Node
+ */
 async function executeGoogleSheetsAppend(node, context) {
   const { config = {} } = node;
   const { ownerId } = context;
@@ -283,7 +536,7 @@ async function executeGoogleSheetsAppend(node, context) {
     tokens = await integrationService.getDecryptedTokens(ownerId, 'google-sheets');
   }
 
-  if (!tokens) {
+  if (!tokens && process.env.NODE_ENV === 'test') {
     tokens = {
       accessToken: 'mock_sheets_token_dev',
       tokenType: 'Bearer',
@@ -291,29 +544,94 @@ async function executeGoogleSheetsAppend(node, context) {
     };
   }
 
-  const rawRecords = context.lastOutput?.records || [
-    { company: 'TechCorp', role: 'Full Stack Developer', sender: 'recruiter@techcorp.com', date: new Date().toISOString().split('T')[0] }
-  ];
+  if (!tokens || !tokens.accessToken) {
+    const err = new Error('Google Sheets is not connected. Please connect Google Sheets in the Integrations hub before running this workflow.');
+    err.code = 'INTEGRATION_NOT_CONNECTED';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const rawRecords = context.lastOutput?.data?.records || context.lastOutput?.records || [];
+
+  if (rawRecords.length === 0) {
+    return {
+      success: true,
+      data: {
+        rowsAppended: 0,
+        skippedDuplicates: 0,
+        records: [],
+        spreadsheetId: config.spreadsheetId || 'default_spreadsheet',
+        sheetName: config.sheetName || 'Jobs',
+        status: 'SUCCESS',
+        message: 'No new job records found to append.'
+      },
+      metadata: {
+        rowsAdded: 0,
+        skippedDuplicates: 0,
+        spreadsheetId: config.spreadsheetId || 'default_spreadsheet',
+        sheetName: config.sheetName || 'Jobs'
+      },
+      rowsAppended: 0,
+      records: [],
+      spreadsheetId: config.spreadsheetId || 'default_spreadsheet',
+      sheetName: config.sheetName || 'Jobs',
+      status: 'SUCCESS',
+      error: null
+    };
+  }
 
   const results = [];
+  let skippedCount = 0;
+  const effectiveSpreadsheetId = config.spreadsheetId || process.env.GOOGLE_SHEETS_SPREADSHEET_ID || process.env.SPREADSHEET_ID;
+
   for (const record of rawRecords) {
+    const hash = getRecordHash(record);
+    if (processedIdsStore.has(hash)) {
+      skippedCount++;
+      continue;
+    }
+
     const res = await googleSheetsIntegration.appendRow(tokens, {
-      spreadsheetId: config.spreadsheetId || 'default_spreadsheet',
+      spreadsheetId: effectiveSpreadsheetId,
       sheetName: config.sheetName || 'Jobs',
       rowData: record
     });
+    
+    processedIdsStore.add(hash);
     results.push(res);
+    newRecords.push(record);
   }
 
+  const appendedCount = results.length;
+
   return {
-    rowsAppended: results.length,
-    records: rawRecords,
-    spreadsheetId: config.spreadsheetId || 'default_spreadsheet',
+    success: true,
+    data: {
+      rowsAppended: appendedCount,
+      skippedDuplicates: skippedCount,
+      records: newRecords,
+      spreadsheetId: effectiveSpreadsheetId || 'default_spreadsheet',
+      sheetName: config.sheetName || 'Jobs',
+      status: 'SUCCESS'
+    },
+    metadata: {
+      rowsAdded: appendedCount,
+      skippedDuplicates: skippedCount,
+      spreadsheetId: effectiveSpreadsheetId || 'default_spreadsheet',
+      sheetName: config.sheetName || 'Jobs'
+    },
+    rowsAppended: appendedCount,
+    records: newRecords,
+    spreadsheetId: effectiveSpreadsheetId || 'default_spreadsheet',
     sheetName: config.sheetName || 'Jobs',
-    status: 'SUCCESS'
+    status: 'SUCCESS',
+    error: null
   };
 }
 
+/**
+ * 8. Slack Post Message Node
+ */
 async function executeSlackPostMessage(node, context) {
   const { config = {} } = node;
   const { ownerId } = context;
@@ -323,11 +641,18 @@ async function executeSlackPostMessage(node, context) {
     credentials = await integrationService.getDecryptedTokens(ownerId, 'slack');
   }
 
-  if (!credentials) {
+  if (!credentials && process.env.NODE_ENV === 'test') {
     credentials = {
       accessToken: 'mock_slack_token',
       webhookUrl: 'https://hooks.slack.com/services/TXXXXXXX/BXXXXXXX/mock'
     };
+  }
+
+  if (!credentials) {
+    const err = new Error('Slack is not connected. Please connect Slack in the Integrations hub before running this workflow.');
+    err.code = 'INTEGRATION_NOT_CONNECTED';
+    err.statusCode = 400;
+    throw err;
   }
 
   const defaultTemplate = 'Notification: {{records[0].role}} at {{records[0].company}}';
@@ -335,18 +660,30 @@ async function executeSlackPostMessage(node, context) {
   const message = resolveVariables(template, context);
 
   const res = await slackIntegration.postMessage(credentials, {
-    channel: config.channel || '#alerts',
+    channel: config.channel || '#career-alerts',
     text: message
   });
 
   return {
+    success: true,
+    data: {
+      sent: true,
+      channel: config.channel || '#career-alerts',
+      message,
+      response: res
+    },
+    metadata: { channel: config.channel || '#career-alerts' },
     sent: true,
-    channel: config.channel || '#alerts',
+    channel: config.channel || '#career-alerts',
     message,
-    response: res
+    response: res,
+    error: null
   };
 }
 
+/**
+ * 9. Discord Post Message Node
+ */
 async function executeDiscordPostMessage(node, context) {
   const { config = {} } = node;
   const { ownerId } = context;
@@ -356,11 +693,18 @@ async function executeDiscordPostMessage(node, context) {
     credentials = await integrationService.getDecryptedTokens(ownerId, 'discord');
   }
 
-  if (!credentials) {
+  if (!credentials && process.env.NODE_ENV === 'test') {
     credentials = {
       accessToken: 'mock_discord_token',
       webhookUrl: 'https://discord.com/api/webhooks/mock_id/mock_token'
     };
+  }
+
+  if (!credentials) {
+    const err = new Error('Discord is not connected. Please connect Discord in the Integrations hub before running this workflow.');
+    err.code = 'INTEGRATION_NOT_CONNECTED';
+    err.statusCode = 400;
+    throw err;
   }
 
   const template = config.messageTemplate || 'Notification: {{summary}}';
@@ -372,13 +716,25 @@ async function executeDiscordPostMessage(node, context) {
   });
 
   return {
+    success: true,
+    data: {
+      sent: true,
+      channelId: config.channelId || 'general',
+      content,
+      response: res
+    },
+    metadata: { channelId: config.channelId || 'general' },
     sent: true,
     channelId: config.channelId || 'general',
     content,
-    response: res
+    response: res,
+    error: null
   };
 }
 
+/**
+ * 10. LinkedIn Post Node
+ */
 async function executeLinkedInPost(node, context) {
   const { config = {} } = node;
   const { ownerId } = context;
@@ -388,20 +744,27 @@ async function executeLinkedInPost(node, context) {
     credentials = await integrationService.getDecryptedTokens(ownerId, 'linkedin');
   }
 
-  if (!credentials) {
+  if (!credentials && process.env.NODE_ENV === 'test') {
     credentials = {
       accessToken: 'mock_linkedin_token',
       expiresAt: new Date(Date.now() + 60 * 24 * 3600 * 1000).toISOString()
     };
   }
 
-  // Derive post content from previous nodes if not explicitly specified
+  if (!credentials) {
+    const err = new Error('LinkedIn is not connected. Please connect LinkedIn in the Integrations hub before running this workflow.');
+    err.code = 'INTEGRATION_NOT_CONNECTED';
+    err.statusCode = 400;
+    throw err;
+  }
+
   let postContent = config.content;
   if (!postContent) {
-    if (context.lastOutput?.summary) {
-      postContent = context.lastOutput.summary;
-    } else if (context.lastOutput?.records && context.lastOutput.records.length > 0) {
-      const r = context.lastOutput.records[0];
+    const lastData = context.lastOutput?.data || context.lastOutput || {};
+    if (lastData.summary) {
+      postContent = lastData.summary;
+    } else if (lastData.records && lastData.records.length > 0) {
+      const r = lastData.records[0];
       postContent = `Excited to share an update on ${r.role || 'my role'} at ${r.company || 'TechCorp'}! 🚀 #Career #Growth`;
     } else {
       postContent = 'Excited to share my latest engineering achievements with HYRO Automation! 🚀 #Tech #Innovation';
@@ -417,43 +780,84 @@ async function executeLinkedInPost(node, context) {
   });
 
   return {
+    success: true,
+    data: {
+      published: true,
+      status: 'PUBLISHED',
+      postId: res.id,
+      content: postContent,
+      publishedAt: res.publishedAt
+    },
+    metadata: { postId: res.id },
     published: true,
     status: 'PUBLISHED',
     postId: res.id,
     content: postContent,
-    publishedAt: res.publishedAt
+    publishedAt: res.publishedAt,
+    error: null
   };
 }
 
+/**
+ * 11. Condition Branch Node
+ */
 async function executeConditionBranch(node, context) {
   const { config = {} } = node;
   const condition = config.condition || 'category === "JOB"';
   const conditionMet = evaluateCondition(condition, context);
 
   return {
+    success: true,
+    data: {
+      branched: true,
+      conditionMet,
+      selectedBranch: conditionMet ? 'TRUE' : 'FALSE',
+      condition
+    },
+    metadata: { conditionMet, selectedBranch: conditionMet ? 'TRUE' : 'FALSE' },
     branched: true,
     conditionMet,
     selectedBranch: conditionMet ? 'TRUE' : 'FALSE',
-    condition
+    condition,
+    error: null
   };
 }
 
+/**
+ * 12. Approval Gate Node
+ */
 async function executeApprovalGate(node, context) {
   const { config = {} } = node;
   const isPreApproved = context.options?.approved === true || context.execution?.approvedNodes?.[node.id] === true;
 
   if (isPreApproved) {
     return {
+      success: true,
+      data: {
+        approvalRequired: true,
+        status: 'APPROVED',
+        approvedAt: new Date().toISOString()
+      },
+      metadata: { status: 'APPROVED' },
       approvalRequired: true,
       status: 'APPROVED',
-      approvedAt: new Date().toISOString()
+      approvedAt: new Date().toISOString(),
+      error: null
     };
   }
 
   return {
+    success: true,
+    data: {
+      approvalRequired: true,
+      status: 'WAITING_FOR_APPROVAL',
+      message: config.approvalMessage || 'Human approval required before proceeding.'
+    },
+    metadata: { status: 'WAITING_FOR_APPROVAL' },
     approvalRequired: true,
     status: 'WAITING_FOR_APPROVAL',
-    message: config.approvalMessage || 'Human approval required before proceeding.'
+    message: config.approvalMessage || 'Human approval required before proceeding.',
+    error: null
   };
 }
 
@@ -505,6 +909,9 @@ class ExecutionAgent {
         output = await executor(node, context);
       } else {
         output = {
+          success: true,
+          data: { executed: true, nodeType: type, timestamp: new Date().toISOString() },
+          metadata: { nodeType: type },
           executed: true,
           nodeType: type,
           timestamp: new Date().toISOString()

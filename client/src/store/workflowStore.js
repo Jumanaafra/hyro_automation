@@ -328,7 +328,26 @@ export const useWorkflowStore = create((set, get) => ({
   // API: execute workflow
   executeWorkflow: async (id) => {
     const res = await api.post(`/workflows/${id}/execute`);
-    return res.data.data;
+    const initialData = res.data.data;
+    const execId = initialData?._id || initialData?.execution?._id || initialData?.id;
+
+    if (!execId) return initialData;
+
+    // Poll until final status is reached
+    for (let i = 0; i < 40; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      try {
+        const statusRes = await api.get(`/executions/${execId}`);
+        const currentExec = statusRes.data.data?.execution || statusRes.data.data;
+        if (currentExec && (currentExec.status === 'COMPLETED' || currentExec.status === 'FAILED' || currentExec.status === 'WAITING_FOR_APPROVAL')) {
+          return currentExec;
+        }
+      } catch (e) {
+        // ignore polling error
+      }
+    }
+
+    return initialData;
   },
 
   setNodeExecutionStatus: (nodeId, status) => {

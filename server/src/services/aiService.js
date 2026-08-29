@@ -7,13 +7,13 @@ const env = require('../config/env');
 // ── Deterministic rule-based workflow builder ──────────────────────────────
 const RULE_BASED_TEMPLATES = {
   gmail_sheets: {
-    name: 'Gmail to Google Sheets',
-    description: 'Read Gmail emails and save details to Google Sheets',
+    name: 'Gmail Job Monitor to Google Sheets',
+    description: 'Monitor Gmail for job emails and save structured details to Google Sheets',
     nodes: [
-      { id: 'n1', type: 'gmailTrigger', position: { x: 100, y: 200 }, data: { label: 'Gmail Trigger', nodeType: 'gmailTrigger' }, config: { searchQuery: 'is:unread', maxResults: 10 } },
-      { id: 'n2', type: 'aiEmailClassifier', position: { x: 350, y: 200 }, data: { label: 'AI Classifier', nodeType: 'aiEmailClassifier' }, config: { categories: ['JOB', 'CERTIFICATE', 'INVOICE', 'OTHER'] } },
-      { id: 'n3', type: 'aiDetailExtractor', position: { x: 600, y: 200 }, data: { label: 'AI Extractor', nodeType: 'aiDetailExtractor' }, config: { targetFields: 'company,role,sender,date' } },
-      { id: 'n4', type: 'googleSheetsAppend', position: { x: 850, y: 200 }, data: { label: 'Google Sheets', nodeType: 'googleSheetsAppend' }, config: { sheetName: 'Jobs' } }
+      { id: 'n1', type: 'gmailTrigger', position: { x: 100, y: 200 }, data: { label: 'Gmail Trigger', nodeType: 'gmailTrigger' }, config: { searchQuery: 'subject:job OR subject:interview OR subject:application OR subject:offer OR subject:internship OR subject:career OR engineer OR developer OR is:unread', maxResults: 15 } },
+      { id: 'n2', type: 'aiEmailClassifier', position: { x: 350, y: 200 }, data: { label: 'AI Classifier', nodeType: 'aiEmailClassifier' }, config: { categories: ['JOB', 'INTERVIEW', 'OFFER', 'INTERNSHIP', 'OTHER'] } },
+      { id: 'n3', type: 'aiDetailExtractor', position: { x: 600, y: 200 }, data: { label: 'AI Detail Extractor', nodeType: 'aiDetailExtractor' }, config: { targetFields: 'company,role,location,jobType,salary,applicationUrl,email,receivedDate' } },
+      { id: 'n4', type: 'googleSheetsAppend', position: { x: 850, y: 200 }, data: { label: 'Google Sheets Append', nodeType: 'googleSheetsAppend' }, config: { sheetName: 'Jobs' } }
     ],
     edges: [
       { id: 'e1', source: 'n1', target: 'n2', animated: true },
@@ -44,9 +44,9 @@ const RULE_BASED_TEMPLATES = {
     name: 'Gmail Job Extractor to Sheets & Slack',
     description: 'Monitor Gmail for job emails, extract company and role, save to Google Sheets and notify Slack.',
     nodes: [
-      { id: 'n1', type: 'gmailTrigger', position: { x: 100, y: 200 }, data: { label: 'Gmail Trigger', nodeType: 'gmailTrigger' }, config: { searchQuery: 'subject:job OR subject:career', maxResults: 10 } },
+      { id: 'n1', type: 'gmailTrigger', position: { x: 100, y: 200 }, data: { label: 'Gmail Trigger', nodeType: 'gmailTrigger' }, config: { searchQuery: 'subject:job OR subject:interview OR subject:application OR subject:offer OR subject:internship OR subject:career OR engineer OR developer OR is:unread', maxResults: 15 } },
       { id: 'n2', type: 'aiEmailClassifier', position: { x: 350, y: 200 }, data: { label: 'AI Classifier', nodeType: 'aiEmailClassifier' }, config: { categories: ['JOB', 'INTERVIEW', 'OFFER', 'REJECTION'] } },
-      { id: 'n3', type: 'aiDetailExtractor', position: { x: 600, y: 200 }, data: { label: 'AI Detail Extractor', nodeType: 'aiDetailExtractor' }, config: { targetFields: 'company,role,salary,date' } },
+      { id: 'n3', type: 'aiDetailExtractor', position: { x: 600, y: 200 }, data: { label: 'AI Detail Extractor', nodeType: 'aiDetailExtractor' }, config: { targetFields: 'company,role,location,jobType,salary,applicationUrl,email,receivedDate' } },
       { id: 'n4', type: 'googleSheetsAppend', position: { x: 850, y: 200 }, data: { label: 'Google Sheets Append', nodeType: 'googleSheetsAppend' }, config: { sheetName: 'Jobs' } },
       { id: 'n5', type: 'slackPostMessage', position: { x: 1100, y: 200 }, data: { label: 'Slack Message', nodeType: 'slackPostMessage' }, config: { channel: '#career-alerts', messageTemplate: 'New Job: {{role}} at {{company}}' } }
     ],

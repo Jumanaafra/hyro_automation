@@ -98,7 +98,7 @@ async function runEndToEndSuite() {
     // ─────────────────────────────────────────────────────────────
     const prompt1 = 'Monitor my Gmail for job emails, extract the company name, job title and application link, save them to Google Sheets, and send me a Slack notification.';
     const genRes = await request('POST', '/api/workflows/generate', { prompt: prompt1 }, authHeaders);
-    const wf1 = genRes.body.data;
+    const wf1 = genRes.body.data?.workflow || genRes.body.data;
     const t1Ok = genRes.status === 200 &&
       wf1 &&
       Array.isArray(wf1.nodes) &&
@@ -118,17 +118,17 @@ async function runEndToEndSuite() {
       nodes: wf1.nodes,
       edges: wf1.edges
     }, authHeaders);
-    const savedWorkflow = saveRes.body.data?.workflow;
+    const savedWorkflow = saveRes.body.data?.workflow || saveRes.body.data;
     const t2Ok = saveRes.status === 201 && !!savedWorkflow?._id;
     record('E2E-002', 'Save Generated Workflow Graph', 'Saved workflow ID returned', `id:${savedWorkflow?._id}`, t2Ok);
 
     // Execute Saved Workflow
     const execRes = await request('POST', `/api/workflows/${savedWorkflow._id}/execute`, {}, authHeaders);
-    const t3Ok = execRes.status === 200 && !!execRes.body.data?._id;
-    record('E2E-003', 'Trigger Workflow Execution', 'Execution record created', `execId:${execRes.body.data?._id}`, t3Ok);
+    const execId = execRes.body.data?._id || execRes.body.data?.execution?._id;
+    const t3Ok = execRes.status === 200 && !!execId;
+    record('E2E-003', 'Trigger Workflow Execution', 'Execution record created', `execId:${execId}`, t3Ok);
 
     // Poll execution completion
-    const execId = execRes.body.data._id;
     let finalExec = null;
     for (let i = 0; i < 15; i++) {
       await new Promise((r) => setTimeout(r, 200));
@@ -139,6 +139,9 @@ async function runEndToEndSuite() {
       }
     }
     const t4Ok = finalExec && finalExec.status === 'COMPLETED';
+    if (!t4Ok && finalExec) {
+      console.log('   FinalExec Error:', finalExec.error);
+    }
     record('E2E-004', 'End-to-End Execution Completion', 'Status COMPLETED with all node outputs', `status:${finalExec?.status}`, t4Ok);
 
     // ─────────────────────────────────────────────────────────────
@@ -146,7 +149,7 @@ async function runEndToEndSuite() {
     // ─────────────────────────────────────────────────────────────
     const prompt2 = 'Every Friday at 6 PM create a short professional post and publish it to my LinkedIn';
     const genRes2 = await request('POST', '/api/workflows/generate', { prompt: prompt2 }, authHeaders);
-    const wf2 = genRes2.body.data;
+    const wf2 = genRes2.body.data?.workflow || genRes2.body.data;
     const t5Ok = genRes2.status === 200 &&
       wf2.nodes.some((n) => n.type === 'scheduleTrigger') &&
       wf2.nodes.some((n) => n.type === 'approvalGate') &&
@@ -160,9 +163,9 @@ async function runEndToEndSuite() {
       nodes: wf2.nodes,
       edges: wf2.edges
     }, authHeaders);
-    const savedWf2 = saveRes2.body.data?.workflow;
+    const savedWf2 = saveRes2.body.data?.workflow || saveRes2.body.data;
     const execRes2 = await request('POST', `/api/workflows/${savedWf2._id}/execute`, {}, authHeaders);
-    const execId2 = execRes2.body.data._id;
+    const execId2 = execRes2.body.data?._id || execRes2.body.data?.execution?._id;
 
     let pausedExec = null;
     for (let i = 0; i < 15; i++) {
@@ -186,7 +189,7 @@ async function runEndToEndSuite() {
     // ─────────────────────────────────────────────────────────────
     const prompt3 = 'Check Gmail for job emails. If it is a software engineering job, save it to Google Sheets, otherwise ignore it.';
     const genRes3 = await request('POST', '/api/workflows/generate', { prompt: prompt3 }, authHeaders);
-    const wf3 = genRes3.body.data;
+    const wf3 = genRes3.body.data?.workflow || genRes3.body.data;
     const t8Ok = genRes3.status === 200 &&
       wf3.nodes.some((n) => n.type === 'conditionBranch') &&
       wf3.nodes.some((n) => n.type === 'googleSheetsAppend');

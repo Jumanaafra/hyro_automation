@@ -122,15 +122,45 @@ export default function WorkflowDetailPage() {
       // First save current state before executing
       await saveWorkflow();
       const result = await executeWorkflow(id);
-      setExecResult(result);
-      // Mark all completed
-      nodes.forEach((n) => setNodeExecutionStatus(n.id, 'completed'));
+      if (result.status === 'FAILED' || result.error) {
+        setExecError(result.error || 'Execution failed');
+        nodes.forEach((n) => setNodeExecutionStatus(n.id, 'failed'));
+      } else {
+        setExecResult(result);
+        nodes.forEach((n) => setNodeExecutionStatus(n.id, 'completed'));
+      }
     } catch (err) {
       const msg = err.response?.data?.message || err.message || 'Execution failed';
       setExecError(msg);
       nodes.forEach((n) => setNodeExecutionStatus(n.id, 'failed'));
     }
     setExecuting(false);
+  };
+
+  const getMetrics = (res) => {
+    if (!res) return { emailsScanned: 0, jobEmailsFound: 0, jobsExtracted: 0, rowsAdded: 0 };
+    const outputs = res.outputs || {};
+    let emailsScanned = 0;
+    let jobEmailsFound = 0;
+    let jobsExtracted = 0;
+    let rowsAdded = 0;
+
+    for (const out of Object.values(outputs)) {
+      const d = out?.data || out || {};
+      if (d.emails || d.fetchedEmails !== undefined || out.fetchedEmails !== undefined) {
+        emailsScanned = d.count ?? d.fetchedEmails ?? out.fetchedEmails ?? d.emails?.length ?? 0;
+      }
+      if (d.jobCount !== undefined || out.jobCount !== undefined) {
+        jobEmailsFound = d.jobCount ?? out.jobCount ?? 0;
+      }
+      if (d.records && (d.targetFields || out.targetFields)) {
+        jobsExtracted = d.count ?? d.records?.length ?? 0;
+      }
+      if (d.rowsAppended !== undefined || out.rowsAppended !== undefined) {
+        rowsAdded = d.rowsAppended ?? out.rowsAppended ?? 0;
+      }
+    }
+    return { emailsScanned, jobEmailsFound, jobsExtracted, rowsAdded };
   };
 
   if (isLoading || !activeWorkflow) {
@@ -144,6 +174,8 @@ export default function WorkflowDetailPage() {
       </ProtectedRoute>
     );
   }
+
+  const metrics = getMetrics(execResult);
 
   return (
     <ProtectedRoute>
@@ -168,73 +200,64 @@ export default function WorkflowDetailPage() {
                 </span>
                 <StatusBadge status={activeWorkflow.status} />
                 <span className="hidden md:flex items-center gap-1 text-[11px] text-slate-500 font-mono">
-                  <Tag className="w-3 h-3" /> v{activeWorkflow.version || 1}
-                </span>
-                <span className="flex items-center gap-1 text-[11px] font-medium text-slate-400 bg-slate-800/60 px-2.5 py-1 rounded-lg border border-slate-700/50">
-                  <GitBranch className="w-3 h-3 text-indigo-400" /> {nodes.length} nodes • {edges.length} edges
+                  v{activeWorkflow.version || 1} • {nodes.length} nodes
                 </span>
               </div>
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2">
               <button
                 onClick={autoLayout}
                 className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-xs font-semibold transition"
-                title="Auto-arrange graph layout"
+                title="Auto Arrange Nodes"
               >
                 <LayoutGrid className="w-3.5 h-3.5 text-indigo-400" /> Auto Layout
               </button>
 
               <button
-                onClick={handleExecute}
-                disabled={executing}
-                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-emerald-300 bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 shadow-md shadow-emerald-500/10 transition disabled:opacity-50"
-              >
-                {executing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                {executing ? 'Running...' : 'Run Workflow'}
-              </button>
-
-              <button
-                onClick={handleDuplicate}
-                className="hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 hover:bg-indigo-500/20 transition"
-              >
-                <Copy className="w-3.5 h-3.5" /> Duplicate
-              </button>
-
-              <button
-                onClick={handleDelete}
-                className="p-1.5 rounded-xl text-rose-400 hover:bg-rose-500/10 transition"
-                title="Delete Workflow"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-
-              <button
                 onClick={handleSave}
                 disabled={isSaving}
-                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-md shadow-indigo-600/30 transition disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 border border-slate-700 transition disabled:opacity-50"
               >
                 {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
                 {saved ? 'Saved ✓' : 'Save'}
+              </button>
+
+              <button
+                onClick={handleExecute}
+                disabled={executing}
+                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 shadow-md shadow-emerald-600/25 transition disabled:opacity-50"
+              >
+                {executing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                {executing ? 'Running...' : 'Run Workflow'}
               </button>
             </div>
           </div>
 
           {/* Execution Output Banner */}
           {execResult && (
-            <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-2.5 flex items-center justify-between text-xs text-emerald-300">
-              <div className="flex items-center gap-2">
+            <div className="bg-emerald-500/10 border-b border-emerald-500/20 px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-emerald-300">
+              <div className="flex items-center gap-2.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                <span>
-                  <strong>Execution Completed:</strong> {execResult.workflowSnapshot?.name || 'Workflow'} ran in {execResult.duration || 0}ms across 5 cooperating agents.
-                </span>
+                <div>
+                  <p className="font-bold text-white">
+                    Workflow Completed Successfully ({execResult.duration || 0}ms)
+                  </p>
+                  <p className="text-[11px] text-emerald-300/80 mt-0.5">
+                    Emails scanned: {metrics.emailsScanned}
+                    {metrics.emailsScanned === 0 ? ' (No new matching emails in Gmail)' : ''} •
+                    Job emails found: {metrics.jobEmailsFound} •
+                    Jobs extracted: {metrics.jobsExtracted} •
+                    Rows added to Google Sheets: {metrics.rowsAdded}
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => router.push(`/executions/${execResult._id}`)}
-                className="flex items-center gap-1 font-semibold underline hover:text-emerald-200"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 font-semibold transition"
               >
-                <Eye className="w-3.5 h-3.5" /> View Live Timeline
+                <Eye className="w-3.5 h-3.5" /> View Execution Logs
               </button>
             </div>
           )}

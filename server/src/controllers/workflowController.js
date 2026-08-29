@@ -22,7 +22,10 @@ class WorkflowController {
       return res.status(200).json({
         success: true,
         message: 'Workflow generated successfully',
-        data: result
+        data: {
+          workflow: result,
+          ...result
+        }
       });
     } catch (err) {
       next(err);
@@ -73,7 +76,17 @@ class WorkflowController {
     try {
       const executionService = require('../services/executionService');
       const result = await executionService.startExecution(req.params.id, req.user.id, req.body.inputs || {});
-      return res.status(200).json({ success: true, data: result });
+      const execObj = result && typeof result.toObject === 'function' ? result.toObject() : (result || {});
+      return res.status(200).json({
+        success: true,
+        message: 'Workflow execution started',
+        data: {
+          execution: execObj,
+          _id: execObj._id,
+          id: execObj._id,
+          ...execObj
+        }
+      });
     } catch (err) { next(err); }
   }
 

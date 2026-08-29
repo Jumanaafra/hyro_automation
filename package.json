@@ -7,6 +7,7 @@
     "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue.bold,green.bold\" \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
+    "build": "npm run build --prefix client",
     "build:client": "npm run build --prefix client",
     "test:p9": "node server/tests/testRunnerPhase9.js",
     "test": "node server/tests/testRunnerPhase9.js",

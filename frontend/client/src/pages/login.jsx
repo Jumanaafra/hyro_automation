@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { useAuthStore } from '../store/authStore';
-import { Bot, LogIn, Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { LogIn, Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 
 export default function Login() {
   const router = useRouter();
@@ -26,9 +26,11 @@ export default function Login() {
       <div className="w-full max-w-md">
         {/* Branding Logo */}
         <div className="text-center mb-8">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-500 flex items-center justify-center text-white mx-auto shadow-lg shadow-indigo-500/30 mb-3">
-            <Bot className="w-7 h-7" />
-          </div>
+          <img
+            src="/hyro-logo.png"
+            alt="Hyro Automation Logo"
+            className="h-16 w-auto object-contain mx-auto mb-3"
+          />
           <h1 className="text-2xl font-bold text-white">Sign In to HYRO</h1>
           <p className="text-sm text-slate-400 mt-1">Access your automation console</p>
         </div>

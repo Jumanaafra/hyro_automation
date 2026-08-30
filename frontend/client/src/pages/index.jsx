@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { Bot, Sparkles, Workflow, ArrowRight, ShieldCheck, Zap, Layers, Database } from 'lucide-react';
+import { Sparkles, Workflow, ArrowRight, ShieldCheck, Zap, Layers, Database } from 'lucide-react';
 
 export default function Home() {
   return (
@@ -7,13 +7,11 @@ export default function Home() {
       {/* Top Header Navbar */}
       <header className="h-20 border-b border-slate-800/80 px-8 flex items-center justify-between max-w-7xl w-full mx-auto">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-500 flex items-center justify-center text-white shadow-lg shadow-indigo-500/30">
-            <Bot className="w-6 h-6" />
-          </div>
-          <div>
-            <span className="font-bold text-xl tracking-wider text-white">HYRO</span>
-            <span className="text-xs block text-indigo-400 font-semibold uppercase -mt-1">Automation</span>
-          </div>
+          <img
+            src="/hyro-logo.png"
+            alt="Hyro Automation Logo"
+            className="h-10 w-auto object-contain"
+          />
         </div>
 
         <div className="flex items-center gap-4">

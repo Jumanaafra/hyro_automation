@@ -1,7 +1,11 @@
 import axios from 'axios';
 
+// Normalize base URL — strip trailing slash if present
+const rawUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+const baseURL = rawUrl.replace(/\/+$/, '');
+
 const api = axios.create({
-  baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api',
+  baseURL,
   headers: {
     'Content-Type': 'application/json',
   },

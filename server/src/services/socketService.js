@@ -13,9 +13,25 @@ class SocketService {
   }
 
   initialize(httpServer) {
+    const allowedOrigins = [
+      env.CLIENT_URL,
+      'http://localhost:3000',
+      'http://localhost:3001',
+    ].filter(Boolean);
+
     this.io = new Server(httpServer, {
       cors: {
-        origin: env.CLIENT_URL || 'http://localhost:3000',
+        origin: (origin, callback) => {
+          if (!origin) return callback(null, true);
+          if (
+            allowedOrigins.includes(origin) ||
+            /\.vercel\.app$/.test(origin) ||
+            /\.onrender\.com$/.test(origin)
+          ) {
+            return callback(null, true);
+          }
+          return callback(new Error(`CORS: Socket origin not allowed — ${origin}`));
+        },
         credentials: true
       },
       pingTimeout: 60000,

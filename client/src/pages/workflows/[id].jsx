@@ -68,7 +68,8 @@ export default function WorkflowDetailPage() {
   // Connect Socket.IO for real-time node execution highlights
   useEffect(() => {
     if (!token) return;
-    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:5000';
+    const rawApi = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api';
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || rawApi.replace(/\/api\/?$/, '');
     const socket = io(socketUrl, {
       auth: { token },
       transports: ['websocket', 'polling']

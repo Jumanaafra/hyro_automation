@@ -260,10 +260,10 @@ hyro_automation/                    ← Monorepo root
 ├── README.md                        ← Project documentation
 ├── render.yaml                      ← Render deployment configuration
 └── vercel.json                      ← Vercel deployment configuration
-
+```
 ---
 
-## 5. Screenshots
+#**# 5. Screenshots**
 
 Screenshots of the major application screens and important features are provided below.
 
